@@ -22,6 +22,7 @@ t/04-chained.t
 t/author/pod-coverage.t
 t/author/pod.t
 t/lib/Makefile.PL
+t/lib/Mock/UserObject.pm
 t/lib/script/testapp_server.pl
 t/lib/script/testapp_test.pl
 t/lib/script/testcanvisit_server.pl

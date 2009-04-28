@@ -1,37 +1,39 @@
 package Catalyst::Action::Role::ACL;
 
-use 5.008_001;
+use 5.008;
 
 use strict;
 use warnings;
-use base 'Catalyst::Action';
+use base qw/Catalyst::Action/;
+use Catalyst::Exception;
 use MRO::Compat;
 use mro 'c3';
 Class::C3::initialize();
 
 use vars qw($VERSION);
-$VERSION = '0.03';
+$VERSION = '0.04';
 
 =head1 NAME
 
-Catalyst::Action::Role::ACL - User role-based authorization action class.
+Catalyst::Action::Role::ACL - User role-based authorization action class
 
 =head1 SYNOPSIS
 
- sub foo :Local
+ sub foo
+ :Local
  :ActionClass(Role::ACL)
- :RequiresRole(admin) {
+ :RequiresRole(admin)
+ :ACLDetachTo(denied)
+ {
      my ($self, $c) = @_;
      ...
  }
 
- # elsewhere
- sub end :ActionClass('RenderView') {
+ sub denied :Private {
      my ($self, $c) = @_;
 
-     if ($c->res->status eq '403') {
-         $c->detach('denied');
-     }
+     $c->res->status = '403';
+     $c->body('Denied!');
  }
 
 =head1 DESCRIPTION
@@ -40,29 +42,62 @@ Provides a L<Catalyst reusable action|Catalyst::Manual::Actions> for user
 role-based authorization. ACLs are applied via the assignment of attributes to
 application action subroutines.
 
-=head2 Processing of ACLs
+=head1 REQUIRED ATTRIBUTES
+
+Failure to include the following required attributes will result in an exception
+when the ACL::Role action's constructor is called.
+
+=head2 ACLDetachTo
+
+The name of an action to which the request should be detached if it is
+determined that ACLs are not satisfied for this user and the resource he
+is attempting to access.
+
+=head2 RequiresRole and AllowedRole
+
+The action must include at least one of these attributes, otherwise the Role::ACL
+constructor will throw an exception.
+
+=head1 Processing of ACLs
 
 One or more roles may be associated with an action.
 
-Roles specified with the RequiresRole attribute are processed before roles
+User roles are fetched via the invocation of the context "user" object's "roles"
+method.
+
+Roles specified with the RequiresRole attribute are checked before roles
 specified with the AllowedRole attribute.
 
-An action with an empty ACL (no role attributes assigned) is unreachable by any
-user regardless of the roles assigned to his account. This is not particularly
-useful, and at some point will be changed so that the absence of role attributes
-will cause a compile-time exception.
-
-User roles are fetched via the invocation of the context user object's "roles"
-method.
+The mandatory ACLDetachTo attribute specifies the name of the action to which
+execution will detach on access violation.
 
 ACLs may be applied to chained actions so that different roles are required or
 allowed for each link in the chain (or no roles at all).
 
+ACLDetachTo allows us to short-circuit traversal of an action chain as soon as
+access is denied to one of the actions in the chain by its ACL.
+
 =head2 Examples
 
- sub foo :Local
+ # this is an invalid action
+ sub broken
+ :Local
  :ActionClass(Role::ACL)
- :RequiresRole(admin) {
+ {
+     my ($self, $c) = @_;
+     ...
+ }
+
+ This action will cause an exception because it's missing the ACLDetachTo attribute
+ and has neither a RequiresRole nor an AllowedRole attribute. A Role::ACL action
+ must include at least one RequiresRole or AllowedRole attribute.
+
+ sub foo
+ :Local
+ :ActionClass(Role::ACL)
+ :RequiresRole(admin)
+ :ACLDetachTo(denied)
+ {
      my ($self, $c) = @_;
      ...
  }
@@ -73,39 +108,66 @@ This action may only be executed by users with the 'admin' role.
  :ActionClass(Role::ACL)
  :RequiresRole(admin)
  :AllowedRole(editor)
- :AllowedRole(writer) {
+ :AllowedRole(writer)
+ :ACLDetachTo(denied)
+ {
      my ($self, $c) = @_;
      ...
  }
 
 This action requires that the user has the 'admin' role and
-also either the 'editor' or 'writer' role (or both).
+either the 'editor' or 'writer' role (or both).
 
  sub easy :Local
  :ActionClass(Role::ACL)
  :AllowedRole(admin)
- :AllowedRole(user) {
+ :AllowedRole(user)
+ :ACLDetachTo(denied)
+ {
      my ($self, $c) = @_;
      ...
  }
 
 Any user with either the 'admin' or 'user' role may execute this action.
 
- sub unreachable :Local
- :ActionClass(Role::ACL) {
-     my ($self, $c) = @_;
-     ...
- }
-
-This action is unreachable and will always result in a 403 Forbidden response.
-This is probably not very useful and should instead be caught at compile-time
-and cause an exception.
-
 =head1 METHODS
 
-=head2 execute
+=cut
 
-See L<Catalyst::Action/METHODS/action>.
+=head2 C<new( $args )>
+
+Overrides the Catalyst::Action constructor to provide validation of parameters.
+
+Throws an exception if parameters are missing or invalid.
+
+=cut
+
+sub new {
+    my $class = shift;
+    my ($args) = @_;
+
+    my $attr = $args->{attributes};
+
+    unless (exists $attr->{RequiresRole} || exists $attr->{AllowedRole}) {
+        Catalyst::Exception->throw(
+            "Action '$args->{reverse}' requires at least one RequiresRole or AllowedRole attribute");
+    }
+    unless (exists $attr->{ACLDetachTo} && $attr->{ACLDetachTo}) {
+        Catalyst::Exception->throw(
+            "Action '$args->{reverse}' requires the ACLDetachTo(<action>) attribute");
+    }
+
+    return $class->next::method(@_);
+}
+
+=head2 C<execute( $controller, $c )>
+
+Overrides &Catalyst::Action::execute.
+
+In order for delegation to occur, the context 'user' object must exist (authenticated user) and
+the C<can_visit> method must return a true value.
+
+See L<Catalyst::Action|METHODS/action>
 
 =cut
 
@@ -120,13 +182,12 @@ sub execute {
         }
     }
 
-    $c->res->status(403);
+    my $denied = $self->attributes->{ACLDetachTo}[0];
 
-    # execution should now fall through to a private 'end' action that
-    # will branch on $c->res->status eq '403'
+    $c->detach($denied);
 }
 
-=head2 can_visit($c)
+=head2 C<can_visit( $c )>
 
 Return true if the authenticated user can visit this action.
 
